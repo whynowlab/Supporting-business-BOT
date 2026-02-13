@@ -86,7 +86,8 @@ def init_db():
         env_interests = os.getenv("PROFILE_INTERESTS", '[]')
         env_keywords = os.getenv("PROFILE_KEYWORDS", '[]')
         env_excludes = os.getenv("PROFILE_EXCLUDES", '[]')
-        env_min_score = int(os.getenv("PROFILE_MIN_SCORE", "60"))
+        env_min_score_str = os.getenv("PROFILE_MIN_SCORE")
+        env_min_score = int(env_min_score_str) if env_min_score_str and env_min_score_str.strip() else 60
         
         default_profile = (
             1,
