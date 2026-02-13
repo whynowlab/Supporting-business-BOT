@@ -1,0 +1,40 @@
+name: Bizinfo Bot Schedule
+
+on:
+  schedule:
+    # Run every 6 hours (00:00, 06:00, 12:00, 18:00 UTC)
+    # KST is UTC+9. So 00 UTC = 09 KST.
+    # 09, 15, 21, 03 KST.
+    - cron: '0 */6 * * *'
+  workflow_dispatch:
+
+jobs:
+  run-bot:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+
+      - name: Run Bot (Stateless)
+        env:
+          BIZINFO_SUPPORT_KEY: ${{ secrets.BIZINFO_SUPPORT_KEY }}
+          BIZINFO_EVENT_KEY: ${{ secrets.BIZINFO_EVENT_KEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_ALLOWED_CHAT_ID: ${{ secrets.TELEGRAM_ALLOWED_CHAT_ID }}
+          # Profile Configs (Optional Secrets)
+          PROFILE_REGIONS: ${{ secrets.PROFILE_REGIONS }}
+          PROFILE_INTERESTS: ${{ secrets.PROFILE_INTERESTS }}
+          PROFILE_KEYWORDS: ${{ secrets.PROFILE_KEYWORDS }}
+          PROFILE_EXCLUDES: ${{ secrets.PROFILE_EXCLUDES }}
+          PROFILE_MIN_SCORE: ${{ secrets.PROFILE_MIN_SCORE }}
+        run: |
+          python -m src.run_once

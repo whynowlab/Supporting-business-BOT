@@ -81,13 +81,20 @@ def init_db():
     # Initialize default profile if running for the first time
     cursor.execute("SELECT count(*) FROM company_profile WHERE id=1")
     if cursor.fetchone()[0] == 0:
+        # Load defaults from ENV if available (for GitHub Actions)
+        env_region = os.getenv("PROFILE_REGIONS", '["전국"]')
+        env_interests = os.getenv("PROFILE_INTERESTS", '[]')
+        env_keywords = os.getenv("PROFILE_KEYWORDS", '[]')
+        env_excludes = os.getenv("PROFILE_EXCLUDES", '[]')
+        env_min_score = int(os.getenv("PROFILE_MIN_SCORE", "60"))
+        
         default_profile = (
             1,
-            json.dumps(["전국"], ensure_ascii=False),
-            json.dumps([], ensure_ascii=False),
-            json.dumps([], ensure_ascii=False),
-            json.dumps([], ensure_ascii=False),
-            60,
+            env_region, # Already JSON string expected in env or default
+            env_interests,
+            env_keywords, # include
+            env_excludes,
+            env_min_score,
             1,
             "08:30",
             7
