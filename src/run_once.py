@@ -121,6 +121,10 @@ async def run_once():
                 "reasons": reasons
             })
     
+    # Sort
+    recommendations.sort(key=lambda x: x["score"], reverse=True)
+    top_items = recommendations[:15] # Limit total
+    
     today_date = datetime.now().strftime('%Y-%m-%d %H:%M')
     
     if not top_items:

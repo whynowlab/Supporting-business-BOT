@@ -37,14 +37,17 @@ def normalize_support(item: Dict[str, Any]) -> Dict[str, Any]:
 
 def normalize_event(item: Dict[str, Any]) -> Dict[str, Any]:
     # Try multiple keys for ID and Title
-    seq = item.get('eventId') or item.get('pblancId') or item.get('eventInfoId', '')
-    title = item.get('eventNm') or item.get('pblancNm') or item.get('title', '')
+    # Log says: nttNm (Title), nttCn (Content), registDe (Date), eventBeginEndDe (Period), orginlUrlAdres (URL)
+    # Also eventInfoId might be ID? But log shows 'eventInfoId': '...' isn't in top content?
+    # Wait, 'eventInfoId' IS in keys list.
+    seq = item.get('eventInfoId') or item.get('eventId') or item.get('pblancId') or str(item.get('inqireCo', '')) # unique ID?
+    title = item.get('nttNm') or item.get('eventNm') or item.get('pblancNm') or item.get('title', '')
     
     # Periods
     apply_period_raw = item.get('rceptPd') or item.get('reqstBeginEndDe')
     apply_start, apply_end = parse_period(apply_period_raw)
     
-    event_period_raw = item.get('eventPeriod')
+    event_period_raw = item.get('eventBeginEndDe') or item.get('eventPeriod')
     event_start, event_end = parse_period(event_period_raw)
     
     return {
@@ -53,7 +56,7 @@ def normalize_event(item: Dict[str, Any]) -> Dict[str, Any]:
         "source": "bizinfo",
         "seq": seq,
         "title": title,
-        "summary_raw": item.get('eventCn') or item.get('pblancCn'),
+        "summary_raw": item.get('nttCn') or item.get('eventCn') or item.get('pblancCn'),
         "agency": item.get('insttNm') or item.get('jrsdinstNm'),
         "category_l1": "행사",
         "region_raw": item.get('areaNm') or item.get('jrsdinstNm'),
@@ -63,7 +66,7 @@ def normalize_event(item: Dict[str, Any]) -> Dict[str, Any]:
         "event_period_raw": event_period_raw,
         "event_start_at": event_start,
         "event_end_at": event_end,
-        "url": item.get('inqireUrl') or item.get('url') or f"https://www.bizinfo.go.kr/web/ext/retrieveDtlNews.do?pblancId={seq}",
+        "url": item.get('orginlUrlAdres') or item.get('inqireUrl') or item.get('url') or f"https://www.bizinfo.go.kr/web/ext/retrieveDtlNews.do?pblancId={seq}",
         "created_at_source": item.get('regDate') or item.get('creatPnttm'),
         "updated_at_source": None,
         "ingested_at": datetime.now().isoformat()
