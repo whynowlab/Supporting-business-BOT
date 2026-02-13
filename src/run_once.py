@@ -28,6 +28,11 @@ async def run_once():
     supports = client.fetch_support_programs()
     new_items = []
     
+    # DEBUG: Log first item to check keys
+    if supports:
+        logger.info(f"DEBUG: First Support Item Keys: {supports[0].keys()}")
+        logger.info(f"DEBUG: First Support Item Raw: {json.dumps(supports[0], ensure_ascii=False)[:500]}...")
+
     for item in supports:
         try:
             norm = normalize_support(item)
@@ -39,6 +44,11 @@ async def run_once():
     # Events
     logger.info("Fetching events...")
     events = client.fetch_events()
+    
+    if events:
+        logger.info(f"DEBUG: First Event Item Keys: {events[0].keys()}")
+        logger.info(f"DEBUG: First Event Item Raw: {json.dumps(events[0], ensure_ascii=False)[:500]}...")
+
     for item in events:
         try:
             norm = normalize_event(item)

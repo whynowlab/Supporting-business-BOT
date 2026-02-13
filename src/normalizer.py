@@ -29,10 +29,8 @@ def normalize_support(item: Dict[str, Any]) -> Dict[str, Any]:
         "apply_period_raw": apply_period_raw,
         "apply_start_at": start_at,
         "apply_end_at": end_at,
-        "url": item.get('inqireUrl') or f"https://www.bizinfo.go.kr/web/lay1/bbs/S1T122C128/AS/74/view.do?pblancId={seq}", # Prefer API URL
-        # Note: Generic URL might be AS/74/view.do or A/105/view.do. The 'AS/74' part seems more common in recent docs.
-        # But let's try to just search "bizinfo.go.kr" if all else fails? No.
-        # Best bet: Use 'inqireUrl' field from API if present.
+        "url": item.get('inqireUrl') or f"https://www.bizinfo.go.kr/web/lay1/bbs/S1T122C128/AS/74/view.do?pblancId={seq}", # Support URL
+        # Search results suggest AS/74 is common.
         "created_at_source": item.get('creatPnttm'), # "YYYY-MM-DD HH:MM:SS"
         "updated_at_source": None, # Usually not provided clearly
         "ingested_at": datetime.now().isoformat()
