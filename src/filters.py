@@ -3,7 +3,14 @@ from datetime import datetime
 from typing import Dict, List, Any, Tuple
 
 def check_exclude(program: Dict[str, Any], profile: Dict[str, Any]) -> bool:
-    excludes = json.loads(profile.get('exclude_keywords', '[]'))
+    raw = profile.get('exclude_keywords', '[]')
+    if not raw or not raw.strip():
+        raw = '[]'
+    try:
+        excludes = json.loads(raw)
+    except json.JSONDecodeError:
+        excludes = []
+        
     if not excludes:
         return False
         
@@ -21,7 +28,14 @@ def check_exclude(program: Dict[str, Any], profile: Dict[str, Any]) -> bool:
     return False
 
 def check_region(program: Dict[str, Any], profile: Dict[str, Any]) -> bool:
-    allows = json.loads(profile.get('region_allow', '[]'))
+    raw = profile.get('region_allow', '[]')
+    if not raw or not raw.strip():
+        raw = '[]'
+    try:
+        allows = json.loads(raw)
+    except json.JSONDecodeError:
+        allows = ["전국"] # Default fallback
+    
     # If "전국" in allowed, or empty, usually means allow all? 
     # PRD: "region_allow가 설정되어 있고... 명확히 배제 가능하면 제외"
     # Defaults include "전국".
@@ -70,8 +84,16 @@ def calculate_score(program: Dict[str, Any], profile: Dict[str, Any]) -> Tuple[i
     score = 5 # Base score
     reasons = []
     
-    interests = json.loads(profile.get('interests', '[]'))
-    includes = json.loads(profile.get('include_keywords', '[]'))
+    raw_interests = profile.get('interests', '[]')
+    if not raw_interests or not raw_interests.strip(): raw_interests = '[]'
+    try: interests = json.loads(raw_interests)
+    except: interests = []
+    
+    raw_includes = profile.get('include_keywords', '[]')
+    if not raw_includes or not raw_includes.strip(): raw_includes = '[]'
+    try: includes = json.loads(raw_includes)
+    except: includes = []
+    
     min_score = profile.get('min_score', 60)
     due_threshold = profile.get('due_days_threshold', 7)
     
