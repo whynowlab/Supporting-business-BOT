@@ -22,14 +22,14 @@ def normalize_support(item: Dict[str, Any]) -> Dict[str, Any]:
         "source": "bizinfo",
         "seq": seq,
         "title": title,
-        "summary_raw": item.get('pblancSumry') or item.get('pblancCn'), # Summary or Content
-        "agency": item.get('jrsdinstNm') or item.get('excInsttNm'), # Jurisdiction or Executing Inst
-        "category_l1": item.get('pblancClCd'), # Classification Code (mapped if needed, or raw)
-        "region_raw": item.get('jrsdinstNm'), # Often region is implied by agency or separate field
+        "summary_raw": item.get('pblancSumry') or item.get('pblancCn') or item.get('bsnsSumryCn'), # Added bsnsSumryCn
+        "agency": item.get('jrsdinstNm') or item.get('excInsttNm'),
+        "category_l1": item.get('pblancClCd'),
+        "region_raw": item.get('jrsdinstNm'),
         "apply_period_raw": apply_period_raw,
         "apply_start_at": start_at,
         "apply_end_at": end_at,
-        "url": item.get('inqireUrl') or f"https://www.bizinfo.go.kr/web/ext/retrieveDtlNews.do?pblancId={seq}",
+        "url": item.get('pblancUrl') or item.get('inqireUrl') or f"https://www.bizinfo.go.kr/web/ext/retrieveDtlNews.do?pblancId={seq}", # Added pblancUrl
         "created_at_source": item.get('creatPnttm'),
         "updated_at_source": None,
         "ingested_at": datetime.now().isoformat()
