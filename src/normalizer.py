@@ -68,9 +68,6 @@ def normalize_event(item: Dict[str, Any]) -> Dict[str, Any]:
         "updated_at_source": None,
         "ingested_at": datetime.now().isoformat()
     }
-        # Actually Event URL is likely different. Let's start with this or try to find pattern.
-        # Fallback to general search if unsure? PRD doesn't specify URL construction, but usually reliable.
-        # Check if item has 'link'?
         "created_at_source": item.get('regDate'),
         "updated_at_source": None,
         "ingested_at": datetime.now().isoformat()
