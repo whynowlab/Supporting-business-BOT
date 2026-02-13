@@ -29,7 +29,10 @@ def normalize_support(item: Dict[str, Any]) -> Dict[str, Any]:
         "apply_period_raw": apply_period_raw,
         "apply_start_at": start_at,
         "apply_end_at": end_at,
-        "url": f"https://www.bizinfo.go.kr/web/lay1/bbs/S1T122C128/A/105/view.do?pblancId={seq}", # Support URL
+        "url": item.get('inqireUrl') or f"https://www.bizinfo.go.kr/web/lay1/bbs/S1T122C128/AS/74/view.do?pblancId={seq}", # Prefer API URL
+        # Note: Generic URL might be AS/74/view.do or A/105/view.do. The 'AS/74' part seems more common in recent docs.
+        # But let's try to just search "bizinfo.go.kr" if all else fails? No.
+        # Best bet: Use 'inqireUrl' field from API if present.
         "created_at_source": item.get('creatPnttm'), # "YYYY-MM-DD HH:MM:SS"
         "updated_at_source": None, # Usually not provided clearly
         "ingested_at": datetime.now().isoformat()
@@ -65,17 +68,9 @@ def normalize_event(item: Dict[str, Any]) -> Dict[str, Any]:
         "event_period_raw": event_period_raw,
         "event_start_at": event_start,
         "event_end_at": event_end,
-        "url": f"https://www.bizinfo.go.kr/web/lay1/bbs/S1T122C127/A/104/view.do?pblancId={seq}", # Event uses bbs/S1T122C127/A/104 ? No, usually events are separate.
-        # Actually Bizinfo structure:
-        # Support: S1T122C128/A/105
-        # Event/Training: S1T122C127/A/104 (Education/Seminar)
-        # Let's try S1T122C127 for events.
-        # If API gives 'event', it is likely 'Education/Seminar/Exhibition'.
-        # Common URL for education: https://www.bizinfo.go.kr/web/lay1/bbs/S1T122C127/A/104/view.do?pblancId=
-        # Wait, 'eventId' vs 'pblancId'. API response for event has 'eventId'?
-        # Let's check if 'eventId' is used as 'pblancId' in URL.
-        # Usually yes, just different BBS ID.
-        # We will use the Education/Seminar board URL for events.
+        "url": item.get('inqireUrl') or f"https://www.bizinfo.go.kr/web/lay1/bbs/S1T122C127/AS/73/view.do?pblancId={seq}", 
+        # API often returns valid URL in 'inqireUrl' or 'url'.
+        # Fallback to S1T122C127/AS/73 based on search trends for events?
         
         "created_at_source": item.get('regDate'),
         # Actually Event URL is likely different. Let's start with this or try to find pattern.
