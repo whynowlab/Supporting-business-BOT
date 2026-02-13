@@ -68,7 +68,4 @@ def normalize_event(item: Dict[str, Any]) -> Dict[str, Any]:
         "updated_at_source": None,
         "ingested_at": datetime.now().isoformat()
     }
-        "created_at_source": item.get('regDate'),
-        "updated_at_source": None,
-        "ingested_at": datetime.now().isoformat()
-    }
+
