@@ -38,8 +38,9 @@ def normalize_support(item: Dict[str, Any]) -> Dict[str, Any]:
 
 def normalize_event(item: Dict[str, Any]) -> Dict[str, Any]:
     # Event keys: eventId, eventNm, eventPeriod, rceptPd, etc.
-    seq = item.get('eventId', '')
-    title = item.get('eventNm', '')
+    # Fallback keys: sometimes it might be pblancId?
+    seq = item.get('eventId') or item.get('pblancId', '')
+    title = item.get('eventNm') or item.get('pblancNm') or item.get('title', '')
     
     # Periods
     # rceptPd is receipt period (apply)

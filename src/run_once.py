@@ -139,10 +139,15 @@ async def run_once():
         msg = f"📢 **[{datetime.now().strftime('%H:%M')}] 업데이트 ({len(top_items)}건)**\n\n"
         for r in top_items:
             item = r['item']
+            title = item.get('title', '제목 없음').strip()
+            if not title: title = "제목 없음"
+            
             reasons = ", ".join(r['reasons'])
-            msg += f"[{r['score']}] {item['title']}\n"
+            url = item.get('url', '#')
+            
+            msg += f"[{r['score']}] {title}\n"
             msg += f"💡 {reasons}\n"
-            msg += f"🔗 {item['url']}\n\n"
+            msg += f"🔗 {url}\n\n"
             
         # Chunking if needed
         if len(msg) > 4000:
