@@ -119,8 +119,8 @@ async def run_once():
         return
 
     # 4. Send Telegram
-    token = os.getenv("TELEGRAM_BOT_TOKEN")
-    chat_id = os.getenv("TELEGRAM_ALLOWED_CHAT_ID")
+    token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
+    chat_id = os.getenv("TELEGRAM_ALLOWED_CHAT_ID", "").strip()
     
     if token and chat_id:
         bot = Bot(token=token)
