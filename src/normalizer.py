@@ -29,23 +29,19 @@ def normalize_support(item: Dict[str, Any]) -> Dict[str, Any]:
         "apply_period_raw": apply_period_raw,
         "apply_start_at": start_at,
         "apply_end_at": end_at,
-        "url": item.get('inqireUrl') or f"https://www.bizinfo.go.kr/web/lay1/bbs/S1T122C128/AS/74/view.do?pblancId={seq}", # Support URL
-        # Search results suggest AS/74 is common.
-        "created_at_source": item.get('creatPnttm'), # "YYYY-MM-DD HH:MM:SS"
-        "updated_at_source": None, # Usually not provided clearly
+        "url": item.get('inqireUrl') or f"https://www.bizinfo.go.kr/web/ext/retrieveDtlNews.do?pblancId={seq}",
+        "created_at_source": item.get('creatPnttm'),
+        "updated_at_source": None,
         "ingested_at": datetime.now().isoformat()
     }
 
 def normalize_event(item: Dict[str, Any]) -> Dict[str, Any]:
-    # Event keys: eventId, eventNm, eventPeriod, rceptPd, etc.
-    # Fallback keys: sometimes it might be pblancId?
-    seq = item.get('eventId') or item.get('pblancId', '')
+    # Try multiple keys for ID and Title
+    seq = item.get('eventId') or item.get('pblancId') or item.get('eventInfoId', '')
     title = item.get('eventNm') or item.get('pblancNm') or item.get('title', '')
     
     # Periods
-    # rceptPd is receipt period (apply)
-    # eventPeriod is event period
-    apply_period_raw = item.get('rceptPd')
+    apply_period_raw = item.get('rceptPd') or item.get('reqstBeginEndDe')
     apply_start, apply_end = parse_period(apply_period_raw)
     
     event_period_raw = item.get('eventPeriod')
@@ -57,21 +53,21 @@ def normalize_event(item: Dict[str, Any]) -> Dict[str, Any]:
         "source": "bizinfo",
         "seq": seq,
         "title": title,
-        "summary_raw": item.get('eventCn'),
-        "agency": item.get('insttNm'),
-        "category_l1": "행사", # Default for events
-        "region_raw": item.get('areaNm'),
+        "summary_raw": item.get('eventCn') or item.get('pblancCn'),
+        "agency": item.get('insttNm') or item.get('jrsdinstNm'),
+        "category_l1": "행사",
+        "region_raw": item.get('areaNm') or item.get('jrsdinstNm'),
         "apply_period_raw": apply_period_raw,
         "apply_start_at": apply_start,
         "apply_end_at": apply_end,
         "event_period_raw": event_period_raw,
         "event_start_at": event_start,
         "event_end_at": event_end,
-        "url": item.get('inqireUrl') or f"https://www.bizinfo.go.kr/web/lay1/bbs/S1T122C127/AS/73/view.do?pblancId={seq}", 
-        # API often returns valid URL in 'inqireUrl' or 'url'.
-        # Fallback to S1T122C127/AS/73 based on search trends for events?
-        
-        "created_at_source": item.get('regDate'),
+        "url": item.get('inqireUrl') or item.get('url') or f"https://www.bizinfo.go.kr/web/ext/retrieveDtlNews.do?pblancId={seq}",
+        "created_at_source": item.get('regDate') or item.get('creatPnttm'),
+        "updated_at_source": None,
+        "ingested_at": datetime.now().isoformat()
+    }
         # Actually Event URL is likely different. Let's start with this or try to find pattern.
         # Fallback to general search if unsure? PRD doesn't specify URL construction, but usually reliable.
         # Check if item has 'link'?

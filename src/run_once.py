@@ -120,12 +120,15 @@ async def run_once():
                 "reasons": reasons
             })
     
-    # Sort
-    recommendations.sort(key=lambda x: x["score"], reverse=True)
-    top_items = recommendations[:15] # Limit total
+    today_date = datetime.now().strftime('%Y-%m-%d %H:%M')
     
     if not top_items:
         logger.info("No recommendations found.")
+        # Send a "No items" message so user knows bot ran.
+        if token and chat_id:
+            bot = Bot(token=token)
+            msg = f"📉 **[{today_date}] 업데이트 없음**\n\n조건에 맞는 새로운 지원사업/행사가 없습니다.\n(수집: 지원 {len(supports)}건, 행사 {len(events)}건)"
+            await bot.send_message(chat_id=chat_id, text=msg)
         return
 
     # 4. Send Telegram
@@ -136,7 +139,7 @@ async def run_once():
         bot = Bot(token=token)
         
         # Format message
-        msg = f"📢 **[{datetime.now().strftime('%H:%M')}] 업데이트 ({len(top_items)}건)**\n\n"
+        msg = f"📢 **[{today_date}] 업데이트 ({len(top_items)}건)**\n\n"
         for r in top_items:
             item = r['item']
             title = item.get('title', '제목 없음').strip()
