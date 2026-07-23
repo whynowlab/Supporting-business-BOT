@@ -1,8 +1,9 @@
 # tests/test_run_once_v2.py
-from src.llm_filter import Assessment
+from src.llm_filter import Assessment, EligibilityVerdict
+from src.program_state import ProgramRecord
 
 
-def _make_program(key: str, title: str) -> dict:
+def _make_program(key: str, title: str) -> ProgramRecord:
     return {
         "program_key": key,
         "kind": "support",
@@ -26,7 +27,15 @@ def test_graded_notification_format():
     from src.run_once import format_graded_message
 
     grade_a = [
-        (_make_program("s:1", "보안장비 지원"), Assessment("A", "KC 인증 대상, 1억", "충족")),
+        (
+            _make_program("s:1", "보안장비 지원"),
+            Assessment(
+                "A",
+                "KC 인증 대상, 1억",
+                "충족",
+                EligibilityVerdict.CONFIRMED,
+            ),
+        ),
     ]
     grade_b = [
         (_make_program("s:2", "디지털전환 컨설팅"), Assessment("B", "SW사업자 가능", "미확인")),
@@ -36,8 +45,27 @@ def test_graded_notification_format():
     assert "[기업마당]" in msg
     assert "보안장비 지원" in msg
     assert "KC 인증 대상" in msg
+    assert "확인됨" in msg
     assert "🟡" in msg
     assert "디지털전환 컨설팅" in msg
+
+
+def test_graded_notification_marks_changed_deadline():
+    from src.run_once import format_graded_message
+
+    changed = _make_program("s:1", "보안장비 지원")
+    changed["_change_kind"] = "CHANGED"
+    changed["_changed_fields"] = ["apply_end_at"]
+
+    msg = format_graded_message(
+        [(changed, Assessment("A", "마감 연장", "충족"))],
+        [],
+        total_checked=1,
+        stage1_passed=1,
+    )
+
+    assert "변경" in msg
+    assert "마감" in msg
 
 
 def test_graded_notification_b_only_heading():
@@ -90,3 +118,32 @@ def test_keyword_fallback_skips_hard_rejected_items():
     recs = _run_keyword_fallback(items, profile)
 
     assert [rec["item"]["program_key"] for rec in recs] == ["x:2"]
+
+
+def test_priority_prefers_changed_then_urgent_programs():
+    from src.program_selection import prioritize_programs
+
+    routine = _make_program("s:1", "상시 공고")
+    routine["apply_end_at"] = None
+    urgent = _make_program("s:2", "마감 임박")
+    urgent["apply_end_at"] = "2026-07-24"
+    changed = _make_program("s:3", "변경 공고")
+    changed["_change_kind"] = "CHANGED"
+
+    selected = prioritize_programs([routine, urgent, changed], limit=2)
+
+    assert [item["program_key"] for item in selected] == ["s:3", "s:2"]
+
+
+def test_long_notification_is_split_without_losing_tail_or_coverage():
+    from src.notification_format import messages_with_coverage
+
+    body = "\n\n".join(f"공고 {index}: " + "가" * 250 for index in range(30))
+    coverage = "[수집 범위] sbiz24 success 497/497"
+
+    messages = messages_with_coverage(body, coverage, max_length=1000)
+
+    assert len(messages) > 1
+    assert all(len(message) <= 1000 for message in messages)
+    assert "공고 29" in "".join(messages)
+    assert messages[-1].endswith(coverage)

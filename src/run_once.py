@@ -1,24 +1,40 @@
-# src/run_once.py
-import asyncio
-import os
 import logging
-import json
-from datetime import datetime
+import os
 
+import anyio
 from dotenv import load_dotenv
-load_dotenv()
-
-from src.db import init_db, upsert_program, get_profile, log_ingestion_run
-from src.bizinfo_client import BizinfoClient
-from src.fanfandaero_client import FanfandaeroClient
-from src.normalizer import normalize_support, normalize_event, normalize_fanfandaero_support
-from src.filters import is_recommended, is_obviously_irrelevant
-from src.notified_cache import load_notified_keys, save_notified_keys, filter_new_programs
-from src.llm_filter import stage1_quick_filter, stage2_assess, Assessment
-from src.detail_crawler import fetch_detail
-from src.decision_log import log_decision
 from telegram import Bot
 
+from src.bizinfo_client import BizinfoClient
+from src.db import get_profile, init_db
+from src.decision_log import log_decision
+from src.detail_crawler import fetch_detail
+from src.llm_filter import Assessment, stage1_quick_filter, stage2_assess
+from src.notification_format import (
+    format_fallback_message,
+    format_graded_message,
+    messages_with_coverage,
+    source_label as _source_label,
+)
+from src.notified_cache import load_notified_keys, save_notified_keys
+from src.program_selection import (
+    apply_hard_filter as _apply_hard_filter,
+    persist_program_state as _persist_program_state,
+    prioritize_programs,
+    programs_to_process as _programs_to_process,
+    run_keyword_fallback as _run_keyword_fallback,
+)
+from src.program_state import ChangeKind, classify_programs, load_program_state
+from src.source_coverage import (
+    format_coverage_manifest,
+    has_degraded_sources,
+    write_github_step_summary,
+)
+from src.source_ingestion import IngestionOutcome, ingest_all as _ingest_all
+
+__all__ = ["IngestionOutcome", "format_fallback_message", "format_graded_message", "run_once"]
+
+load_dotenv()
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -31,158 +47,29 @@ def _log_path() -> str:
     return os.getenv("DECISION_LOG_PATH", "data/decisions.jsonl")
 
 
-def _log_ingestion(kind: str, fetched_count: int, normalized_count: int, error: str | None = None) -> None:
-    log_ingestion_run({
-        "run_at": datetime.now().isoformat(),
-        "kind": kind,
-        "fetched_count": fetched_count,
-        "new_count": normalized_count,
-        "updated_count": 0,
-        "error": error,
-    })
+def _max_programs_per_run() -> int:
+    try:
+        configured = int(os.getenv("MAX_PROGRAMS_PER_RUN", "40"))
+    except ValueError:
+        configured = 40
+    return max(1, min(configured, 100))
 
 
-def _ingest_source(kind: str, raw_items: list[dict], normalizer) -> list[dict]:
-    normalized_items = []
-    for item in raw_items:
-        try:
-            norm = normalizer(item)
-            upsert_program(norm)
-            normalized_items.append(norm)
-        except Exception as e:
-            logger.error(f"Error processing {kind} item: {e}")
-    _log_ingestion(kind, len(raw_items), len(normalized_items))
-    return normalized_items
+def _append_backlog_note(body: str, deferred_count: int) -> str:
+    if not deferred_count:
+        return body
+    return body + f"\n\n⏳ 마감 순 검토 대기 {deferred_count}건 — 다음 실행에서 계속"
 
 
-def _ingest_all(client: BizinfoClient, fanfandaero_client: FanfandaeroClient | None = None) -> list[dict]:
-    """Fetch and normalize all programs from configured public sources."""
-    new_items = []
-
-    logger.info("Fetching bizinfo support programs...")
-    supports = client.fetch_support_programs()
-    if supports:
-        logger.debug(f"First support item keys: {supports[0].keys()}")
-    normalized_supports = _ingest_source("support", supports, normalize_support)
-    new_items.extend(normalized_supports)
-    logger.info(f"Bizinfo support: {len(supports)} fetched, {len(normalized_supports)} normalized")
-
-    events_start = len(new_items)
-    logger.info("Fetching bizinfo events...")
-    events = client.fetch_events()
-    if events:
-        logger.debug(f"First event item keys: {events[0].keys()}")
-    normalized_events = _ingest_source("event", events, normalize_event)
-    new_items.extend(normalized_events)
-    logger.info(f"Events: {len(events)} fetched, {len(new_items) - events_start} normalized")
-
-    fanfandaero_client = fanfandaero_client or FanfandaeroClient()
-    fanfandaero_start = len(new_items)
-    logger.info("Fetching Fanfandaero support programs...")
-    fanfandaero_items = fanfandaero_client.fetch_support_programs()
-    if fanfandaero_items:
-        logger.debug(f"First Fanfandaero item keys: {fanfandaero_items[0].keys()}")
-    normalized_fanfandaero = _ingest_source(
-        "fanfandaero_support",
-        fanfandaero_items,
-        normalize_fanfandaero_support,
-    )
-    new_items.extend(normalized_fanfandaero)
-    logger.info(
-        f"Fanfandaero: {len(fanfandaero_items)} fetched, {len(new_items) - fanfandaero_start} normalized"
-    )
-
-    return new_items
+async def _send_messages(bot: Bot, chat_id: str, messages: tuple[str, ...]) -> None:
+    for message in messages:
+        await bot.send_message(chat_id=chat_id, text=message)
 
 
-def format_graded_message(
+def _log_notification_candidates(
     grade_a: list[tuple[dict, Assessment]],
     grade_b: list[tuple[dict, Assessment]],
-    total_checked: int,
-    stage1_passed: int,
-) -> str:
-    today = datetime.now().strftime("%Y-%m-%d %H:%M")
-
-    if not grade_a and not grade_b:
-        return f"✅ [{today}] 신규 해당 공고 없음 ({total_checked}건 검토, {stage1_passed}건 상세 판단)"
-
-    parts = [f"📢 [{today}] 지원사업 알림\n"]
-
-    if grade_a:
-        parts.append(f"🔴 반드시 검토 ({len(grade_a)}건)\n")
-        for i, (p, a) in enumerate(grade_a, 1):
-            title = (p.get("title") or "제목 없음").strip()
-            parts.append(f"{i}. [{_source_label(p)}] {title}")
-            parts.append(f"   → {a.reason}")
-            parts.append(f"   🔗 {p.get('url', '#')}\n")
-
-    if grade_b:
-        b_heading = "참고 사항" if not grade_a else "참고"
-        parts.append(f"🟡 {b_heading} ({len(grade_b)}건)\n")
-        for i, (p, a) in enumerate(grade_b, 1):
-            title = (p.get("title") or "제목 없음").strip()
-            parts.append(f"{i}. [{_source_label(p)}] {title}")
-            parts.append(f"   → {a.reason}")
-            parts.append(f"   🔗 {p.get('url', '#')}\n")
-
-    msg = "\n".join(parts)
-    if len(msg) > 4000:
-        msg = msg[:4000] + "\n...(생략)..."
-    return msg
-
-
-def format_fallback_message(recommendations: list[dict]) -> str:
-    today = datetime.now().strftime("%Y-%m-%d %H:%M")
-    parts = [f"⚠️ [{today}] LLM 판단 불가, 키워드 기반 결과 ({len(recommendations)}건)\n"]
-    for r in recommendations[:15]:
-        item = r["item"]
-        title = (item.get("title") or "제목 없음").strip()
-        reasons = ", ".join(r["reasons"])
-        parts.append(f"[{r['score']}] [{_source_label(item)}] {title}")
-        parts.append(f"💡 {reasons}")
-        parts.append(f"🔗 {item.get('url', '#')}\n")
-
-    msg = "\n".join(parts)
-    if len(msg) > 4000:
-        msg = msg[:4000] + "\n...(생략)..."
-    return msg
-
-
-def _run_keyword_fallback(items: list[dict], profile: dict) -> list[dict]:
-    """Legacy keyword-based filter. Returns sorted recommendations."""
-    recommendations = []
-    for item in items:
-        hard_rejected, _ = is_obviously_irrelevant(item)
-        if hard_rejected:
-            continue
-        ok, score, reasons = is_recommended(item, profile)
-        if ok:
-            recommendations.append({"item": item, "score": score, "reasons": reasons})
-    recommendations.sort(key=lambda x: x["score"], reverse=True)
-    return recommendations
-
-
-def _source_label(program: dict) -> str:
-    labels = {
-        "bizinfo": "기업마당",
-        "fanfandaero": "판판대로",
-    }
-    return labels.get(program.get("source"), program.get("source") or "출처미상")
-
-
-def _apply_hard_filter(items: list[dict]) -> tuple[list[dict], list[tuple[dict, str]]]:
-    candidates = []
-    rejected = []
-    for item in items:
-        is_rejected, reason = is_obviously_irrelevant(item)
-        if is_rejected:
-            rejected.append((item, reason))
-        else:
-            candidates.append(item)
-    return candidates, rejected
-
-
-def _log_notification_candidates(grade_a: list[tuple[dict, Assessment]], grade_b: list[tuple[dict, Assessment]]) -> None:
+) -> None:
     logger.info("Notification candidates: A=%s, B=%s", len(grade_a), len(grade_b))
     for grade, pairs in (("A", grade_a), ("B", grade_b)):
         for program, assessment in pairs:
@@ -195,88 +82,138 @@ def _log_notification_candidates(grade_a: list[tuple[dict, Assessment]], grade_b
             )
 
 
-async def run_once():
+def _grade_programs(
+    items: list[dict],
+) -> tuple[list[tuple[dict, Assessment]], list[tuple[dict, Assessment]], int]:
+    candidate_items, hard_rejected = _apply_hard_filter(items)
+    logger.info("Hard filter: %s/%s rejected", len(hard_rejected), len(items))
+    for program, reason in hard_rejected:
+        log_decision(program, "REJECT", reason, "hard_filter", _log_path())
+
+    passed = stage1_quick_filter(candidate_items)
+    logger.info("Stage 1: %s/%s passed", len(passed), len(candidate_items))
+    for program in candidate_items:
+        if program not in passed:
+            log_decision(program, "REJECT", "", "stage1", _log_path())
+
+    assessments: list[tuple[dict, Assessment]] = []
+    for program in passed:
+        detail = fetch_detail(program.get("url", ""))
+        assessment = stage2_assess(program, detail)
+        assessments.append((program, assessment))
+        log_decision(program, assessment.grade, assessment.reason, "stage2", _log_path())
+
+    grade_a = [(program, result) for program, result in assessments if result.grade == "A"]
+    grade_b = [(program, result) for program, result in assessments if result.grade == "B"]
+    grade_c = [(program, result) for program, result in assessments if result.grade == "C"]
+    logger.info(
+        "Stage 2 grades: A=%s, B=%s, C=%s",
+        len(grade_a),
+        len(grade_b),
+        len(grade_c),
+    )
+    _log_notification_candidates(grade_a, grade_b)
+    return grade_a, grade_b, len(passed)
+
+
+async def run_once() -> None:
     init_db()
-    client = BizinfoClient()
     profile = get_profile()
+    outcome = _ingest_all(BizinfoClient())
+    all_items = list(outcome.items)
+    coverage_manifest = format_coverage_manifest(outcome.coverage)
+    logger.info("Collection coverage\n%s", coverage_manifest)
 
-    # 1. Ingest
-    all_items = _ingest_all(client)
-    logger.info(f"Ingested {len(all_items)} items total")
+    github_summary_path = os.getenv("GITHUB_STEP_SUMMARY", "").strip()
+    if github_summary_path:
+        write_github_step_summary(coverage_manifest, github_summary_path)
 
-    # 2. Dedup
     notified = load_notified_keys(_cache_path())
-    new_items = filter_new_programs(all_items, notified)
-    logger.info(f"After dedup: {len(new_items)} new items")
+    previous = load_program_state(os.getenv("PROGRAM_STATE_PATH", "data/program_state.json"))
+    changes = classify_programs(all_items, previous, notified)
+    all_actionable_items = _programs_to_process(changes)
+    actionable_items = prioritize_programs(all_actionable_items, _max_programs_per_run())
+    deferred_count = len(all_actionable_items) - len(actionable_items)
+    logger.info(
+        "Program diff new=%s changed=%s selected=%s deferred=%s total=%s",
+        sum(change.kind is ChangeKind.NEW for change in changes),
+        sum(change.kind is ChangeKind.CHANGED for change in changes),
+        len(actionable_items),
+        deferred_count,
+        len(all_items),
+    )
 
     token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
     chat_id = os.getenv("TELEGRAM_ALLOWED_CHAT_ID", "").strip()
-
-    if not new_items:
-        logger.info("No new items to process")
-        return
-
     if not token or not chat_id:
         logger.warning("Telegram token or chat_id missing")
         return
 
     bot = Bot(token=token)
-
-    # 3. LLM pipeline or fallback
-    gemini_key = os.getenv("GEMINI_API_KEY", "").strip()
-    if not gemini_key:
-        logger.info("No GEMINI_API_KEY, using keyword fallback")
-        recs = _run_keyword_fallback(new_items, profile)
-        if recs:
-            msg = format_fallback_message(recs)
-            await bot.send_message(chat_id=chat_id, text=msg)
-        save_notified_keys(notified | {i["program_key"] for i in new_items}, _cache_path())
+    actionable_keys = {
+        str(item["program_key"])
+        for item in all_actionable_items
+        if item.get("program_key")
+    }
+    ignored_keys = {
+        str(change.program["program_key"])
+        for change in changes
+        if change.kind is ChangeKind.NEW
+        and change.program.get("program_key")
+        and str(change.program["program_key"]) not in actionable_keys
+    }
+    handled_keys = notified | ignored_keys | {
+        str(item["program_key"])
+        for item in actionable_items
+        if item.get("program_key")
+    }
+    if not actionable_items:
+        if has_degraded_sources(outcome.coverage):
+            await bot.send_message(
+                chat_id=chat_id,
+                text="⚠️ 수집 누락이 감지됐습니다.\n\n" + coverage_manifest,
+            )
+        _persist_program_state(all_items, previous, outcome.coverage)
+        save_notified_keys(handled_keys, _cache_path())
+        logger.info("No new or changed actionable programs")
         return
 
-    try:
-        # Stage 0: deterministic exclusions for clearly irrelevant public notices.
-        candidate_items, hard_rejected = _apply_hard_filter(new_items)
-        logger.info(f"Hard filter: {len(hard_rejected)}/{len(new_items)} rejected")
-        for p, reason in hard_rejected:
-            log_decision(p, "REJECT", reason, "hard_filter", _log_path())
+    gemini_key = os.getenv("GEMINI_API_KEY", "").strip()
+    if not gemini_key:
+        recommendations = _run_keyword_fallback(actionable_items, profile)
+        if recommendations or has_degraded_sources(outcome.coverage):
+            body = _append_backlog_note(
+                format_fallback_message(recommendations),
+                deferred_count,
+            )
+            messages = messages_with_coverage(
+                body,
+                coverage_manifest,
+            )
+            await _send_messages(bot, chat_id, messages)
+        _persist_program_state(all_items, previous, outcome.coverage)
+        save_notified_keys(handled_keys, _cache_path())
+        return
 
-        # Stage 1
-        passed = stage1_quick_filter(candidate_items)
-        logger.info(f"Stage 1: {len(passed)}/{len(candidate_items)} passed")
+    grade_a, grade_b, stage1_passed = _grade_programs(actionable_items)
+    body = _append_backlog_note(
+        format_graded_message(
+            grade_a,
+            grade_b,
+            len(actionable_items),
+            stage1_passed,
+        ),
+        deferred_count,
+    )
+    messages = messages_with_coverage(
+        body,
+        coverage_manifest,
+    )
 
-        for p in candidate_items:
-            if p not in passed:
-                log_decision(p, "REJECT", "", "stage1", _log_path())
-
-        # Stage 2
-        assessments = []
-        for p in passed:
-            detail = fetch_detail(p.get("url", ""))
-            assessment = stage2_assess(p, detail)
-            assessments.append((p, assessment))
-            log_decision(p, assessment.grade, assessment.reason, "stage2", _log_path())
-
-        grade_a = [(p, a) for p, a in assessments if a.grade == "A"]
-        grade_b = [(p, a) for p, a in assessments if a.grade == "B"]
-        grade_c = [(p, a) for p, a in assessments if a.grade == "C"]
-        logger.info(f"Stage 2 grades: A={len(grade_a)}, B={len(grade_b)}, C={len(grade_c)}")
-        _log_notification_candidates(grade_a, grade_b)
-
-        msg = format_graded_message(grade_a, grade_b, len(new_items), len(passed))
-        await bot.send_message(chat_id=chat_id, text=msg)
-
-        # Record all processed keys
-        all_keys = notified | {i["program_key"] for i in new_items}
-        save_notified_keys(all_keys, _cache_path())
-
-    except Exception as e:
-        logger.error(f"LLM pipeline failed: {e}", exc_info=True)
-        recs = _run_keyword_fallback(new_items, profile)
-        if recs:
-            msg = format_fallback_message(recs)
-            await bot.send_message(chat_id=chat_id, text=msg)
-        save_notified_keys(notified | {i["program_key"] for i in new_items}, _cache_path())
+    await _send_messages(bot, chat_id, messages)
+    _persist_program_state(all_items, previous, outcome.coverage)
+    save_notified_keys(handled_keys, _cache_path())
 
 
 if __name__ == "__main__":
-    asyncio.run(run_once())
+    anyio.run(run_once)

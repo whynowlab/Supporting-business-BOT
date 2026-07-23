@@ -3,6 +3,9 @@ import os
 import json
 import logging
 from dataclasses import dataclass
+from enum import StrEnum
+
+from google.genai import errors as genai_errors
 
 from src.company_profile import build_stage1_prompt, build_stage2_prompt
 
@@ -11,24 +14,42 @@ logger = logging.getLogger(__name__)
 BATCH_SIZE = 10
 
 
-@dataclass
+class EligibilityVerdict(StrEnum):
+    CONFIRMED = "확인됨"
+    CONDITIONAL = "조건부"
+    NEEDS_CONFIRMATION = "확인 필요"
+    INELIGIBLE = "신청 불가"
+    PIVOT_CANDIDATE = "사업전환 후보"
+
+
+class GeminiConfigurationError(ValueError):
+    pass
+
+
+@dataclass(frozen=True, slots=True)
 class Assessment:
     grade: str       # "A", "B", "C"
     reason: str      # One-line rationale
     eligibility: str  # "충족", "미확인", "미충족"
+    verdict: EligibilityVerdict = EligibilityVerdict.NEEDS_CONFIRMATION
 
 
 def parse_stage1_response(raw, total_count: int) -> dict[int, str]:
     """Parse Stage 1 JSON response. Missing/invalid entries default to PASS."""
     result = {}
-    try:
-        if isinstance(raw, str):
+    if isinstance(raw, str):
+        try:
             raw = json.loads(raw)
-        items = raw.get("results", [])
-        for item in items:
-            result[item["id"]] = item.get("decision", "PASS")
-    except Exception:
-        pass
+        except json.JSONDecodeError:
+            raw = {}
+    items = raw.get("results", []) if isinstance(raw, dict) else []
+    if not isinstance(items, list):
+        items = []
+    for item in items:
+        if not isinstance(item, dict) or not isinstance(item.get("id"), int):
+            continue
+        decision = item.get("decision", "PASS")
+        result[item["id"]] = decision if decision in ("PASS", "REJECT") else "PASS"
 
     # Fill missing IDs with PASS
     for i in range(1, total_count + 1):
@@ -40,19 +61,35 @@ def parse_stage1_response(raw, total_count: int) -> dict[int, str]:
 
 def parse_stage2_response(raw) -> Assessment:
     """Parse Stage 2 JSON response. Invalid values get safe defaults."""
-    try:
-        if isinstance(raw, str):
+    if isinstance(raw, str):
+        try:
             raw = json.loads(raw)
-        grade = raw.get("grade", "B")
-        if grade not in ("A", "B", "C"):
-            grade = "B"
-        reason = raw.get("reason", "LLM 판단 불가")
-        eligibility = raw.get("eligibility", "미확인")
-        if eligibility not in ("충족", "미확인", "미충족"):
-            eligibility = "미확인"
-        return Assessment(grade=grade, reason=reason, eligibility=eligibility)
-    except Exception:
-        return Assessment(grade="B", reason="LLM 판단 불가", eligibility="미확인")
+        except json.JSONDecodeError:
+            raw = {}
+    if not isinstance(raw, dict):
+        raw = {}
+
+    grade = raw.get("grade", "B")
+    if grade not in ("A", "B", "C"):
+        grade = "B"
+    reason = raw.get("reason", "LLM 판단 불가")
+    reason = reason if isinstance(reason, str) else "LLM 판단 불가"
+    eligibility = raw.get("eligibility", "미확인")
+    if eligibility not in ("충족", "미확인", "미충족"):
+        eligibility = "미확인"
+    try:
+        verdict = EligibilityVerdict(raw.get("verdict"))
+    except (TypeError, ValueError):
+        if eligibility == "미충족" or grade == "C":
+            verdict = EligibilityVerdict.INELIGIBLE
+        else:
+            verdict = EligibilityVerdict.NEEDS_CONFIRMATION
+    return Assessment(
+        grade=grade,
+        reason=reason,
+        eligibility=eligibility,
+        verdict=verdict,
+    )
 
 
 def _get_gemini_client():
@@ -68,7 +105,7 @@ def stage1_quick_filter(programs: list[dict]) -> list[dict]:
     """Batch-filter programs by title+summary. Returns PASS-ed programs."""
     client = _get_gemini_client()
     if client is None:
-        raise RuntimeError("GEMINI_API_KEY not configured")
+        raise GeminiConfigurationError("GEMINI_API_KEY not configured")
 
     passed = []
     for batch_start in range(0, len(programs), BATCH_SIZE):
@@ -100,8 +137,15 @@ def stage1_quick_filter(programs: list[dict]) -> list[dict]:
                 },
             )
             decisions = parse_stage1_response(json.loads(response.text), len(batch))
-        except Exception as e:
-            logger.error(f"Stage 1 Gemini call failed: {e}")
+        except (
+            AttributeError,
+            TypeError,
+            ValueError,
+            RuntimeError,
+            json.JSONDecodeError,
+            genai_errors.APIError,
+        ) as error:
+            logger.error("Stage 1 Gemini call failed: %s", error)
             decisions = {i: "PASS" for i in range(1, len(batch) + 1)}
 
         for i, program in enumerate(batch, 1):
@@ -114,11 +158,16 @@ def stage1_quick_filter(programs: list[dict]) -> list[dict]:
 def stage2_assess(program: dict, detail_text: str) -> Assessment:
     """Assess single program with detail page text."""
     if not detail_text:
-        return Assessment(grade="B", reason="상세페이지 접근 불가", eligibility="미확인")
+        return Assessment(
+            grade="B",
+            reason="상세페이지 접근 불가",
+            eligibility="미확인",
+            verdict=EligibilityVerdict.NEEDS_CONFIRMATION,
+        )
 
     client = _get_gemini_client()
     if client is None:
-        raise RuntimeError("GEMINI_API_KEY not configured")
+        raise GeminiConfigurationError("GEMINI_API_KEY not configured")
 
     prompt = build_stage2_prompt(program, detail_text)
 
@@ -134,12 +183,28 @@ def stage2_assess(program: dict, detail_text: str) -> Assessment:
                         "grade": {"type": "string", "enum": ["A", "B", "C"]},
                         "reason": {"type": "string"},
                         "eligibility": {"type": "string", "enum": ["충족", "미확인", "미충족"]},
+                        "verdict": {
+                            "type": "string",
+                            "enum": ["확인됨", "조건부", "확인 필요", "신청 불가", "사업전환 후보"],
+                        },
                     },
-                    "required": ["grade", "reason", "eligibility"],
+                    "required": ["grade", "reason", "eligibility", "verdict"],
                 },
             },
         )
         return parse_stage2_response(json.loads(response.text))
-    except Exception as e:
-        logger.error(f"Stage 2 Gemini call failed: {e}")
-        return Assessment(grade="B", reason="LLM 판단 불가", eligibility="미확인")
+    except (
+        AttributeError,
+        TypeError,
+        ValueError,
+        RuntimeError,
+        json.JSONDecodeError,
+        genai_errors.APIError,
+    ) as error:
+        logger.error("Stage 2 Gemini call failed: %s", error)
+        return Assessment(
+            grade="B",
+            reason="LLM 판단 불가",
+            eligibility="미확인",
+            verdict=EligibilityVerdict.NEEDS_CONFIRMATION,
+        )

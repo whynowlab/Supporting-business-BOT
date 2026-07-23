@@ -1,10 +1,11 @@
 from src.run_once import _apply_hard_filter, _ingest_all
+from src.source_result import CollectionStatus, SourceBatch
 
 
 class FakeBizinfoClient:
     def fetch_support_programs(self):
         return [{
-            "pblancId": "B1",
+            "pblancId": "PBLN_B1",
             "pblancNm": "기업마당 지원사업",
             "pblancSumry": "요약",
         }]
@@ -26,18 +27,89 @@ class FakeFanfandaeroClient:
         }]
 
 
-def test_ingest_all_includes_fanfandaero(monkeypatch):
+class FakeSbiz24Client:
+    def collect_all(self):
+        return (
+            SourceBatch(
+                source="sbiz24",
+                items=({
+                    "pbancSn": 10,
+                    "pbancNm": "소진공 직접 공고",
+                    "aplyPsbltySe": "Y",
+                },),
+                status=CollectionStatus.SUCCESS,
+                reported_count=1,
+                fetched_count=1,
+            ),
+            SourceBatch(
+                source="sbiz24_combine",
+                items=({
+                    "pbancId": "PBLN_B1",
+                    "pbancNm": "기업마당 지원사업",
+                    "aplyPsbltySe": "신청가능",
+                },),
+                status=CollectionStatus.SUCCESS,
+                reported_count=1,
+                fetched_count=1,
+            ),
+        )
+
+
+def test_ingest_all_includes_sbiz24_and_deduplicates_cross_source(monkeypatch):
     saved = []
     logs = []
 
-    monkeypatch.setattr("src.run_once.upsert_program", lambda item: saved.append(item))
-    monkeypatch.setattr("src.run_once.log_ingestion_run", lambda item: logs.append(item))
+    monkeypatch.setattr("src.source_ingestion.upsert_program", lambda item: saved.append(item))
+    monkeypatch.setattr("src.source_ingestion.log_ingestion_run", lambda item: logs.append(item))
 
-    items = _ingest_all(FakeBizinfoClient(), FakeFanfandaeroClient())
+    outcome = _ingest_all(
+        FakeBizinfoClient(),
+        FakeFanfandaeroClient(),
+        FakeSbiz24Client(),
+    )
 
-    assert [item["source"] for item in items] == ["bizinfo", "bizinfo", "fanfandaero"]
-    assert [item["source"] for item in saved] == ["bizinfo", "bizinfo", "fanfandaero"]
-    assert [item["kind"] for item in logs] == ["support", "event", "fanfandaero_support"]
+    assert [item["source"] for item in outcome.items] == [
+        "bizinfo",
+        "bizinfo",
+        "fanfandaero",
+        "sbiz24",
+    ]
+    assert len(saved) == 5
+    assert [item["kind"] for item in logs] == [
+        "support",
+        "event",
+        "fanfandaero_support",
+        "sbiz24",
+        "sbiz24_combine",
+    ]
+    assert [entry.source for entry in outcome.coverage] == [
+        "bizinfo_support",
+        "bizinfo_event",
+        "fanfandaero",
+        "sbiz24",
+        "sbiz24_combine",
+    ]
+
+
+def test_ingest_all_marks_zero_required_source_as_failed(monkeypatch):
+    class EmptyBizinfoClient:
+        def fetch_support_programs(self):
+            return []
+
+        def fetch_events(self):
+            return []
+
+    monkeypatch.setattr("src.source_ingestion.upsert_program", lambda _item: None)
+    monkeypatch.setattr("src.source_ingestion.log_ingestion_run", lambda _item: None)
+
+    outcome = _ingest_all(
+        EmptyBizinfoClient(),
+        FakeFanfandaeroClient(),
+        FakeSbiz24Client(),
+    )
+
+    assert outcome.coverage[0].status is CollectionStatus.FAILED
+    assert outcome.coverage[1].status is CollectionStatus.FAILED
 
 
 def test_hard_filter_splits_clear_noise_from_candidates():
