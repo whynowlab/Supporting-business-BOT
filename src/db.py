@@ -1,8 +1,5 @@
 import sqlite3
-import json
 import os
-from datetime import datetime
-from typing import List, Optional, Any
 
 DB_PATH = os.getenv("DB_PATH", "data/bot.db")
 
@@ -35,6 +32,7 @@ def init_db():
         agency TEXT,
         category_l1 TEXT,
         region_raw TEXT,
+        status TEXT,
         apply_period_raw TEXT,
         apply_start_at TEXT,
         apply_end_at TEXT,
@@ -47,6 +45,11 @@ def init_db():
         ingested_at TEXT
     )
     """)
+
+    cursor.execute("PRAGMA table_info(programs)")
+    program_columns = {row[1] for row in cursor.fetchall()}
+    if "status" not in program_columns:
+        cursor.execute("ALTER TABLE programs ADD COLUMN status TEXT")
 
     # 2. company_profile table
     cursor.execute("""

@@ -1,8 +1,9 @@
 from datetime import datetime
 import hashlib
-import json
+import html
+import re
 from .due_parser import parse_period
-from typing import Dict, Any
+from typing import Any, Dict, Literal, assert_never
 
 
 def _stable_seq(*parts: Any) -> str:
@@ -125,4 +126,90 @@ def normalize_fanfandaero_support(item: Dict[str, Any]) -> Dict[str, Any]:
         "created_at_source": item.get('batchPnttm'),
         "updated_at_source": None,
         "ingested_at": datetime.now().isoformat()
+    }
+
+
+def _sbiz_period(item: Dict[str, Any]) -> tuple[str | None, str | None, str | None]:
+    receipt_period = item.get("rcptPd")
+    if isinstance(receipt_period, dict):
+        start_at = _format_yyyymmdd(receipt_period.get("from"))
+        end_at = _format_yyyymmdd(receipt_period.get("to"))
+        raw = f"{start_at or ''} ~ {end_at or ''}".strip()
+        return start_at, end_at, raw
+
+    raw = str(item.get("aplyPd") or "").strip()
+    start_at, end_at = parse_period(raw)
+    if start_at is None:
+        start_at = _format_yyyymmdd(item.get("aplyPdBgngYmd"))
+    if end_at is None:
+        end_at = _format_yyyymmdd(item.get("aplyPdEndYmd"))
+    return start_at, end_at, raw or None
+
+
+def _sbiz_status(item: Dict[str, Any]) -> str:
+    status = str(item.get("aplyPsbltySe") or "").strip()
+    if status in {"Y", "신청가능"}:
+        return "접수중"
+    if status in {"N", "EX", "신청불가", "신청마감", "마감"}:
+        return "마감"
+    if "상시" in status:
+        return "상시"
+    if "예산" in status or "소진" in status:
+        return "예산소진"
+    if "예정" in status:
+        return "회차예정"
+    return "불명"
+
+
+def _plain_text(value: Any) -> str:
+    if isinstance(value, list):
+        return ", ".join(str(part) for part in value if part)
+    text = re.sub(r"<[^>]+>", " ", str(value or ""))
+    return re.sub(r"\s+", " ", html.unescape(text)).strip()
+
+
+def normalize_sbiz24_support(
+    item: Dict[str, Any],
+    source: Literal["sbiz24", "sbiz24_combine"],
+) -> Dict[str, Any]:
+    match source:
+        case "sbiz24":
+            seq = str(item.get("pbancSn") or item.get("pbancId") or "").strip()
+            program_key = f"sbiz24:{seq}"
+            agency = "소상공인시장진흥공단"
+            url = f"https://www.sbiz24.kr/#/pbanc/{seq}"
+        case "sbiz24_combine":
+            seq = str(item.get("pbancId") or item.get("pbancSn") or "").strip()
+            program_key = f"support:{seq}" if seq.startswith("PBLN") else f"sbiz24_combine:{seq}"
+            agency = item.get("departNm") or item.get("jrsdInstNm") or "기관 미상"
+            route = "extldPbanc" if seq.startswith("PBLN") else "pbanc"
+            url = f"https://www.sbiz24.kr/#/{route}/{seq}"
+        case unreachable:
+            assert_never(unreachable)
+
+    start_at, end_at, period_raw = _sbiz_period(item)
+    summary_parts = [
+        _plain_text(item.get(field))
+        for field in ("bizPrps", "sprtTrgtNm", "rcrtTypeCdNm", "pbancDtlCn", "hstgNm")
+    ]
+    summary = " | ".join(dict.fromkeys(part for part in summary_parts if part))[:4000]
+
+    return {
+        "program_key": program_key,
+        "kind": "support",
+        "source": source,
+        "seq": seq,
+        "title": item.get("pbancNm") or "",
+        "summary_raw": summary,
+        "agency": agency,
+        "category_l1": item.get("rcrtTypeCdNm") or item.get("bizType"),
+        "region_raw": _plain_text(item.get("regionNmList") or item.get("regionNm") or item.get("pbancRgn")),
+        "status": _sbiz_status(item),
+        "apply_period_raw": period_raw,
+        "apply_start_at": start_at,
+        "apply_end_at": end_at,
+        "url": item.get("bizAplySiteUrlAddr") or url,
+        "created_at_source": item.get("regDt"),
+        "updated_at_source": item.get("mdfcnDt"),
+        "ingested_at": datetime.now().isoformat(),
     }

@@ -1,5 +1,6 @@
 from src.llm_filter import (
     Assessment,
+    EligibilityVerdict,
     parse_stage1_response,
     parse_stage2_response,
 )
@@ -35,11 +36,17 @@ def test_parse_stage1_garbage_defaults_all_pass():
 
 
 def test_parse_stage2_valid():
-    raw = {"grade": "A", "reason": "KC 인증 보유 대상", "eligibility": "충족"}
+    raw = {
+        "grade": "A",
+        "reason": "KC 인증 보유 대상",
+        "eligibility": "충족",
+        "verdict": "확인됨",
+    }
     a = parse_stage2_response(raw)
     assert a.grade == "A"
     assert a.reason == "KC 인증 보유 대상"
     assert a.eligibility == "충족"
+    assert a.verdict is EligibilityVerdict.CONFIRMED
 
 
 def test_parse_stage2_invalid_grade_defaults_b():
@@ -48,10 +55,41 @@ def test_parse_stage2_invalid_grade_defaults_b():
     assert a.grade == "B"
 
 
+def test_parse_stage2_never_infers_confirmed_without_explicit_verdict():
+    raw = {"grade": "A", "reason": "본문 요건 충족", "eligibility": "충족"}
+
+    assessment = parse_stage2_response(raw)
+
+    assert assessment.verdict is EligibilityVerdict.NEEDS_CONFIRMATION
+
+
 def test_parse_stage2_garbage():
     a = parse_stage2_response("not a dict")
     assert a.grade == "B"
     assert a.eligibility == "미확인"
+    assert a.verdict is EligibilityVerdict.NEEDS_CONFIRMATION
+
+
+def test_parse_stage2_accepts_each_eligibility_verdict():
+    verdicts = [
+        "확인됨",
+        "조건부",
+        "확인 필요",
+        "신청 불가",
+        "사업전환 후보",
+    ]
+
+    parsed = [
+        parse_stage2_response({
+            "grade": "B",
+            "reason": "근거",
+            "eligibility": "미확인",
+            "verdict": verdict,
+        }).verdict.value
+        for verdict in verdicts
+    ]
+
+    assert parsed == verdicts
 
 
 def test_stage1_returns_all_on_api_failure(monkeypatch):
