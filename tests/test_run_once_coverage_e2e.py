@@ -1,3 +1,5 @@
+from datetime import UTC, datetime, timedelta
+
 import anyio
 
 from src.program_state import snapshot_programs
@@ -47,7 +49,7 @@ def test_run_once_surfaces_degraded_collection_in_telegram_and_action_summary(
     monkeypatch.setenv("TELEGRAM_ALLOWED_CHAT_ID", "123")
     monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(summary_path))
     monkeypatch.setattr("src.run_once.init_db", lambda: None)
-    monkeypatch.setattr("src.run_once.get_profile", lambda: {})
+    monkeypatch.setattr("src.run_once.get_profile", dict)
     monkeypatch.setattr(
         "src.run_once._ingest_all",
         lambda _client: IngestionOutcome((program,), coverage),
@@ -73,6 +75,7 @@ def test_run_once_surfaces_degraded_collection_in_telegram_and_action_summary(
 
 
 def test_run_once_defers_unhandled_programs_without_marking_them_notified(monkeypatch):
+    today = datetime.now(UTC).date()
     programs = tuple(
         {
             "program_key": f"support:PBLN_{index}",
@@ -86,7 +89,11 @@ def test_run_once_defers_unhandled_programs_without_marking_them_notified(monkey
             "url": "https://example.com",
         }
         for index, end_at in enumerate(
-            ("2026-07-26", "2026-07-24", "2026-07-25"),
+            (
+                (today + timedelta(days=3)).isoformat(),
+                (today + timedelta(days=1)).isoformat(),
+                (today + timedelta(days=2)).isoformat(),
+            ),
             1,
         )
     )
@@ -109,7 +116,7 @@ def test_run_once_defers_unhandled_programs_without_marking_them_notified(monkey
     monkeypatch.delenv("GEMINI_API_KEY", raising=False)
     monkeypatch.delenv("GITHUB_STEP_SUMMARY", raising=False)
     monkeypatch.setattr("src.run_once.init_db", lambda: None)
-    monkeypatch.setattr("src.run_once.get_profile", lambda: {})
+    monkeypatch.setattr("src.run_once.get_profile", dict)
     monkeypatch.setattr(
         "src.run_once._ingest_all",
         lambda _client: IngestionOutcome(programs, coverage),
